@@ -4,11 +4,12 @@ import time
 from pathlib import Path
 from typing import Literal
 
-from openai import OpenAI
 from tqdm import trange, tqdm
 
 from virtual_lab.agent import Agent
-from virtual_lab.constants import CONSISTENT_TEMPERATURE, PUBMED_TOOL_DESCRIPTION
+from virtual_lab.constants import CONSISTENT_TEMPERATURE
+from virtual_lab.llm.base import LLMClient
+from virtual_lab.llm.openai import OpenAIClient
 from virtual_lab.prompts import (
     individual_meeting_agent_prompt,
     individual_meeting_critic_prompt,
@@ -24,12 +25,39 @@ from virtual_lab.utils import (
     convert_messages_to_discussion,
     count_discussion_tokens,
     count_tokens,
-    get_messages,
     get_summary,
     print_cost_and_time,
-    run_tools,
     save_meeting,
 )
+
+
+from virtual_lab.llm.groq import GroqClient
+from virtual_lab.llm.anthropic import AnthropicClient
+from virtual_lab.llm.ollama import OllamaClient
+from virtual_lab.llm.gemini import GeminiClient
+from virtual_lab.llm.openrouter import OpenRouterClient
+
+
+def get_llm_client(agent: Agent) -> LLMClient:
+    """Gets the LLM client for the agent.
+
+    :param agent: The agent.
+    :return: The LLM client.
+    """
+    provider = getattr(agent, "provider", "openai")
+    if provider == "openai":
+        return OpenAIClient()
+    if provider == "groq":
+        return GroqClient()
+    if provider == "anthropic":
+        return AnthropicClient()
+    if provider == "ollama":
+        return OllamaClient()
+    if provider == "gemini":
+        return GeminiClient()
+    if provider == "openrouter":
+        return OpenRouterClient()
+    raise ValueError(f"Invalid provider: {provider}")
 
 
 def run_meeting(
@@ -91,26 +119,19 @@ def run_meeting(
     # Start timing the meeting
     start_time = time.time()
 
-    # Set up client
-    client = OpenAI()
-
     # Set up team
     if meeting_type == "team":
         team = [team_lead] + list(team_members)
     else:
         team = [team_member] + [SCIENTIFIC_CRITIC]
 
-    # Set up tools
-    assistant_params = {"tools": [PUBMED_TOOL_DESCRIPTION]} if pubmed_search else {}
+    # Get LLM client from the first agent
+    # TODO: Handle multiple clients if agents have different providers
+    llm_client = get_llm_client(team[0])
 
     # Set up the assistants
     agent_to_assistant = {
-        agent: client.beta.assistants.create(
-            name=agent.title,
-            instructions=agent.prompt,
-            model=agent.model,
-            **assistant_params,
-        )
+        agent: llm_client.create_assistant(agent=agent, pubmed_search=pubmed_search)
         for agent in team
     }
 
@@ -123,13 +144,12 @@ def run_meeting(
     tool_token_count = 0
 
     # Set up the thread
-    thread = client.beta.threads.create()
+    thread = llm_client.create_thread()
 
     # Initial prompt for team meeting
     if meeting_type == "team":
-        client.beta.threads.messages.create(
+        llm_client.create_message(
             thread_id=thread.id,
-            role="user",
             content=team_meeting_start_prompt(
                 team_lead=team_lead,
                 team_members=team_members,
@@ -195,14 +215,10 @@ def run_meeting(
                         )
 
             # Create message from user to agent
-            client.beta.threads.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content=prompt,
-            )
+            llm_client.create_message(thread_id=thread.id, content=prompt)
 
             # Run the agent
-            run = client.beta.threads.runs.create_and_poll(
+            run = llm_client.run_thread_and_poll(
                 thread_id=thread.id,
                 assistant_id=agent_to_assistant[agent].id,
                 model=agent.model,
@@ -212,7 +228,7 @@ def run_meeting(
             # Check if run requires action
             if run.status == "requires_action":
                 # Run the tools
-                tool_outputs = run_tools(run=run)
+                tool_outputs = llm_client.run_tools(run=run)
 
                 # Update tool token count
                 tool_token_count += sum(
@@ -220,14 +236,13 @@ def run_meeting(
                 )
 
                 # Submit the tool outputs
-                run = client.beta.threads.runs.submit_tool_outputs_and_poll(
-                    thread_id=thread.id, run_id=run.id, tool_outputs=tool_outputs
+                run = llm_client.submit_tool_outputs_and_poll(
+                    run=run, tool_outputs=tool_outputs
                 )
 
                 # Add tool outputs to the thread so it's visible for later rounds
-                client.beta.threads.messages.create(
+                llm_client.create_message(
                     thread_id=thread.id,
-                    role="user",
                     content="Tool Output:\n\n"
                     + "\n\n".join(
                         tool_output["output"] for tool_output in tool_outputs
@@ -243,7 +258,7 @@ def run_meeting(
                 break
 
     # Get messages from the discussion
-    messages = get_messages(client=client, thread_id=thread.id)
+    messages = llm_client.get_messages(thread_id=thread.id)
 
     # Convert messages to discussion format
     discussion = convert_messages_to_discussion(

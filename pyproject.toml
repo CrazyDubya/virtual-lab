@@ -18,6 +18,11 @@ requires-python = ">=3.10"
 dependencies = [
     "notebook",
     "openai",
+    "groq",
+    "anthropic",
+    "ollama",
+    "google-generativeai",
+    "gradio",
     "requests",
     "tiktoken",
     "tqdm",
