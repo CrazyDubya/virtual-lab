@@ -4,19 +4,30 @@
 class Agent:
     """An LLM agent."""
 
-    def __init__(self, title: str, expertise: str, goal: str, role: str, model: str) -> None:
+    def __init__(
+        self,
+        title: str,
+        expertise: str,
+        goal: str,
+        role: str,
+        model: str,
+        provider: str = "openai",
+    ) -> None:
         """Initializes the agent.
 
         :param title: The title of the agent.
         :param expertise: The expertise of the agent.
         :param goal: The goal of the agent.
         :param role: The role of the agent.
+        :param model: The model of the agent.
+        :param provider: The provider of the agent.
         """
         self.title = title
         self.expertise = expertise
         self.goal = goal
         self.role = role
         self.model = model
+        self.provider = provider
 
     @property
     def prompt(self) -> str:
@@ -51,6 +62,7 @@ class Agent:
             and self.goal == other.goal
             and self.role == other.role
             and self.model == other.model
+            and self.provider == other.provider
         )
 
     def __str__(self) -> str:
